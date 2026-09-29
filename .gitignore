@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+main_111.py
+data/uploads/*
+!data/uploads/.gitkeep
+frontend/node_modules/
+frontend/dist/
+evaluation/results/

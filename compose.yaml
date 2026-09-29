@@ -1,0 +1,116 @@
+name: starbridge-rag
+
+x-backend-common: &backend-common
+  image: starbridge-rag-backend:local
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - .env
+  environment:
+    DB_URL: postgresql://postgres:${POSTGRES_PASSWORD:-123456}@postgres:5432/rag_db
+    MILVUS_URI: http://milvus:19530
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-123456}"
+      POSTGRES_DB: rag_db
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rag_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  milvus:
+    image: milvusdb/milvus:v3.0.1
+    command: ["milvus", "run", "standalone"]
+    restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      DEPLOY_MODE: STANDALONE
+      COMMON_STORAGETYPE: local
+      ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: /var/lib/milvus/etcd
+      ETCD_CONFIG_PATH: /milvus/configs/embedEtcd.yaml
+    ports:
+      - "${MILVUS_PORT:-19530}:19530"
+      - "${MILVUS_HEALTH_PORT:-9091}:9091"
+      - "${ETCD_PORT:-2379}:2379"
+    volumes:
+      - milvus-data:/var/lib/milvus
+    configs:
+      - source: milvus-embed-etcd
+        target: /milvus/configs/embedEtcd.yaml
+      - source: milvus-user
+        target: /milvus/configs/user.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 90s
+
+  knowledge-init:
+    <<: *backend-common
+    command: ["python", "-m", "app.bootstrap"]
+    restart: "no"
+    depends_on:
+      milvus:
+        condition: service_healthy
+
+  backend:
+    <<: *backend-common
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - uploads-data:/app/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+      knowledge-init:
+        condition: service_completed_successfully
+
+  frontend:
+    image: starbridge-rag-frontend:local
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ""
+        VITE_USE_MOCK: "false"
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  milvus-data:
+  uploads-data:
+
+configs:
+  milvus-embed-etcd:
+    content: |
+      listen-client-urls: http://0.0.0.0:2379
+      advertise-client-urls: http://0.0.0.0:2379
+      quota-backend-bytes: 4294967296
+      auto-compaction-mode: revision
+      auto-compaction-retention: '1000'
+  milvus-user:
+    content: |
+      # Extra configuration overrides for the local Milvus standalone instance.
