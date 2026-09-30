@@ -13,6 +13,8 @@
 - 由 LangGraph Agent 判断何时调用知识库工具
 - 使用 SSE 向前端流式输出回答
 - 在回答完成后展示文档来源和知识片段
+- 根据文档 `audience` 元数据隔离客户资料与客服内部资料
+- 客服角色使用服务端密钥授权，客户与客服会话分别保存
 - 使用 PostgreSQL Checkpointer 保存多轮会话状态
 - 支持新建、切换和删除会话
 - 支持上传 PDF、TXT、Markdown 文件并增量写入 Milvus
@@ -100,6 +102,7 @@ cp .env.example .env
 DEEPSEEK_API_KEY=你的密钥
 DEEPSEEK_BASE_URL=对应服务地址
 ZHIPUAI_API_KEY=你的密钥
+SUPPORT_ACCESS_TOKEN=随机长字符串
 ```
 
 不要将真实 `.env` 提交到代码仓库。
@@ -202,9 +205,19 @@ Content-Type: application/json
 ```json
 {
   "message": "企业版支持 SSO 吗？",
-  "thread_id": "session_demo"
+  "thread_id": "session_demo",
+  "role": "customer"
 }
 ```
+
+`role`默认为`customer`。客户只能检索`audience`包含`customer`的文档。
+客服请求使用`role: "support"`时，还必须提供请求头：
+
+```http
+X-Support-Token: 与 .env 中 SUPPORT_ACCESS_TOKEN 相同的值
+```
+
+客服密钥只保存在后端和内部评测环境中，不应写入Vue前端。相同的`thread_id`会按角色映射到不同的PostgreSQL会话，客户无法读取客服会话历史。
 
 ### 流式回答
 
@@ -292,12 +305,12 @@ python evaluation/evaluate.py --category fact
 
 报告会写入 `evaluation/results/`，同时生成 JSON 和 CSV。CSV 中保留了 `expected_behavior` 和 `expected_points`，方便逐题检查答案。评测产生的临时会话默认会自动删除。
 
-检索指标只统计带 `gold_doc_ids` 的题目。权限、历史时间和证据不足类问题还需要人工判断回答行为；当前 API 没有接收用户身份和查询日期，因此程序不会伪造这些题目的自动通过率。在得到真实运行结果前，不应在简历中填写虚构准确率。
+检索指标只统计带 `gold_doc_ids` 的题目。评测程序会按题目中的`role`调用客户或客服知识范围；客服题从本地`.env`读取`SUPPORT_ACCESS_TOKEN`。权限、历史时间和证据不足类问题仍需要人工判断回答行为，程序不会伪造这些题目的自动通过率。在得到真实运行结果前，不应在简历中填写虚构准确率。
 
 ## 当前限制
 
-- 尚未实现登录、租户隔离和完整权限系统
-- `audience`、版本状态和生效日期尚未作为检索过滤条件
+- 尚未实现账号登录和基于用户身份的完整RBAC；当前客服访问使用服务端共享密钥
+- `audience`已经用于检索过滤；版本状态和生效日期尚未作为结构化过滤条件
 - 当前检索以向量 Top K 为主，尚未增加重排序
 - 尚未提供完整的自动化接口测试
 - Redis 已列入依赖，但当前业务流程尚未使用
@@ -313,4 +326,4 @@ python evaluation/evaluate.py --category fact
 - FastAPI 与 Vue 的前后端协作
 - Docker Compose 可复现部署
 
-它已经具备完整演示链路，但仍需要权限过滤、自动评测和测试体系才能达到生产系统要求。
+它已经具备完整演示链路和基础访问边界，但仍需要真实账号认证、完整RBAC、版本过滤和更完整的测试体系才能达到生产系统要求。

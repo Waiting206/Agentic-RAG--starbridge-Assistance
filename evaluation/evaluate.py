@@ -13,6 +13,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import statistics
 import sys
 import time
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import httpx
+from dotenv import dotenv_values
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -186,6 +188,7 @@ def run_question(
     thread_id: str,
     top_k: int,
     keep_thread: bool,
+    support_token: str | None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     first_token_at: float | None = None
@@ -193,12 +196,23 @@ def run_question(
     sources: list[dict[str, Any]] = []
     stream_error: str | None = None
     cleanup_error: str | None = None
+    role = question.get("role", "customer")
+    headers = (
+        {"X-Support-Token": support_token}
+        if role == "support" and support_token
+        else {}
+    )
 
     try:
         with client.stream(
             "POST",
             f"{base_url}/api/chat/stream",
-            json={"message": question["question"], "thread_id": thread_id},
+            headers=headers,
+            json={
+                "message": question["question"],
+                "thread_id": thread_id,
+                "role": role,
+            },
         ) as response:
             response.raise_for_status()
             for event_name, payload in iter_sse(response):
@@ -227,7 +241,11 @@ def run_question(
     finally:
         if not keep_thread:
             try:
-                cleanup_response = client.delete(f"{base_url}/api/threads/{thread_id}")
+                cleanup_response = client.delete(
+                    f"{base_url}/api/threads/{thread_id}",
+                    params={"role": role},
+                    headers=headers,
+                )
                 if cleanup_response.status_code >= 400:
                     cleanup_error = (
                         f"HTTP {cleanup_response.status_code}: {cleanup_response.text[:200]}"
@@ -399,6 +417,17 @@ def main() -> int:
         print("没有符合条件的评测题。", file=sys.stderr)
         return 2
 
+    env_values = dotenv_values(PROJECT_ROOT / ".env")
+    support_token = os.getenv("SUPPORT_ACCESS_TOKEN") or env_values.get(
+        "SUPPORT_ACCESS_TOKEN"
+    )
+    if any(question.get("role") == "support" for question in questions) and not support_token:
+        print(
+            "评测题包含support角色，但.env中没有配置SUPPORT_ACCESS_TOKEN。",
+            file=sys.stderr,
+        )
+        return 2
+
     timestamp = started_at.strftime("%Y%m%d_%H%M%S")
     output_path = args.output or DEFAULT_RESULTS_DIR / f"evaluation_{timestamp}.json"
     output_path = output_path.resolve()
@@ -428,6 +457,7 @@ def main() -> int:
                     thread_id=thread_id,
                     top_k=args.top_k,
                     keep_thread=args.keep_threads,
+                    support_token=support_token,
                 )
                 results.append(result)
                 print(
