@@ -3,9 +3,9 @@ from pathlib import Path
 from langchain.tools import ToolRuntime, tool
 
 from app.RAG.retriever import retriever
+from app.RAG.reranker import rerank
 from app.agent.context import AgentContext
-from app.config import COLLECTION_NAME
-
+from app.config import COLLECTION_NAME, RERANK_CANDIDATE_K, RERANK_ENABLED, TOP_K
 
 def build_search_tool(client, embedding_model):
     @tool(response_format="content_and_artifact")
@@ -27,17 +27,30 @@ def build_search_tool(client, embedding_model):
         context = runtime.context
         role = context.role if isinstance(context, AgentContext) else context.get("role", "customer")
 
-        hits = retriever(
+        candidate_hits = retriever(
             client=client,
             collection_name=COLLECTION_NAME,
             query=query,
             embedding_model=embedding_model,
-            limit=5,
+            limit=RERANK_CANDIDATE_K if RERANK_ENABLED else TOP_K,
             role=role,
         )
-
-        if not hits:
+        if not candidate_hits:
             return "知识库中没有找到相关资料。", []
+
+        # 在请求外部重排序服务前再次校验权限，不发送无权访问的正文。
+        authorized_hits = [
+            hit for hit in candidate_hits
+            if role in hit["entity"].get("audience", [])
+        ]
+        if not authorized_hits:
+            return "当前身份没有可访问的相关资料。", []
+
+        hits = (
+            rerank(query=query, hits=authorized_hits, top_k=TOP_K)
+            if RERANK_ENABLED
+            else authorized_hits[:TOP_K]
+        )
 
         context_blocks = []
         sources = []
@@ -56,8 +69,8 @@ def build_search_tool(client, embedding_model):
             context_blocks.append(
                 f"文档编号：{doc_id}\n"
                 f"来源：{source_name}\n"
-                f"内容：{text}"
                 f"允许访问角色：{', '.join(audience)}\n"
+                f"内容：{text}"
             )
             sources.append(
                 {
@@ -66,7 +79,7 @@ def build_search_tool(client, embedding_model):
                     "title": entity.get("title", source_name),
                     "chunk_id": f"chunk_{hit['id']}",
                     "text": text,
-                    "score": float(hit.get("distance", 0)),
+                    "score": float(hit.get("rerank_score", hit.get("distance", 0))),
                 }
             )
 

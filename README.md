@@ -1,206 +1,153 @@
-# Starbridge Agentic RAG
+# Starbridge Agentic RAG｜星桥协作企业知识助手
 
-面向模拟 B2B SaaS 企业“星桥协作”的知识库助手。项目使用自建的产品、政策、版本公告和客服流程文档，完成知识入库、向量检索、Agent 问答、来源追溯、多轮会话和文件上传。
+面向模拟 B2B SaaS 产品“星桥协作”的知识库问答项目。它将产品说明、套餐政策、版本公告和客服流程组织成可检索的文档，提供带来源的流式回答、多轮会话和知识文件上传。项目数据为原创模拟内容，不含真实企业或客户数据。
 
-项目数据均为原创模拟内容，不包含真实企业或客户数据。
+项目覆盖从文档入库、检索与重排序、Agent 调用，到 FastAPI、Vue 页面和 Docker Compose 部署的完整演示链路。
 
-## 功能
+## 功能概览
 
-- 加载 30 份带 YAML 元数据的 Markdown 企业知识文档
-- 使用 RecursiveCharacterTextSplitter 切分文档
-- 使用内容、页码和起始位置生成稳定 Chunk ID
-- 使用 Embedding 模型和 Milvus 完成语义检索
-- 由 LangGraph Agent 判断何时调用知识库工具
-- 使用 SSE 向前端流式输出回答
-- 在回答完成后展示文档来源和知识片段
-- 根据文档 `audience` 元数据隔离客户资料与客服内部资料
-- 客服角色使用服务端密钥授权，客户与客服会话分别保存
-- 使用 PostgreSQL Checkpointer 保存多轮会话状态
-- 支持新建、切换和删除会话
-- 支持上传 PDF、TXT、Markdown 文件并增量写入 Milvus
-- 使用 SHA-256 识别重复上传文件
-- 使用 Vue 3 实现知识库聊天界面
-- 使用 Docker Compose 部署前端、后端、PostgreSQL 和 Milvus
-- 新环境首次启动时自动初始化内置知识库
+- **知识入库**：加载 30 份带 YAML 元数据的 Markdown 文档；将文本切分、向量化并写入 Milvus。新环境中的空知识库会在 Compose 启动时初始化。
+- **检索问答**：LangGraph Agent 根据问题调用知识库工具。检索链路先从 Milvus 获取候选片段，再按角色过滤，并可调用 Jina Reranker 重排序；服务不可用时回退到 Milvus 原排序。
+- **来源追溯**：回答通过 SSE 流式返回，结束后向页面发送文档名、`doc_id`、`chunk_id` 和片段正文。
+- **会话管理**：LangGraph Checkpointer 将对话状态保存到 PostgreSQL；前端支持新建、切换、删除会话，并用浏览器本地存储保存会话列表。
+- **文件上传**：支持 PDF、TXT、Markdown，单文件最大 10 MB；使用文件 SHA-256 识别重复上传，解析后写入 Milvus。
+- **角色隔离**：客户与客服使用不同的知识访问范围和会话命名空间。客服接口请求需要服务端配置的访问令牌。
 
-## 系统架构
+## 系统结构
 
 ```mermaid
 flowchart LR
-    U[浏览器] --> N[Nginx]
-    N --> V[Vue 3 静态页面]
-    N -->|/api| F[FastAPI]
-    F --> A[LangGraph Agent]
-    A --> T[知识库检索工具]
-    T --> E[Embedding]
-    E --> M[(Milvus)]
-    A --> P[(PostgreSQL Checkpointer)]
-    F --> S[PDF / TXT / Markdown 上传]
-    S --> C[解析与切分]
-    C --> E
+    Browser[Vue 3 页面] --> Nginx[Nginx 静态服务与 /api 代理]
+    Nginx --> API[FastAPI]
+    API --> Agent[LangGraph Agent]
+    Agent --> Tool[知识库检索工具]
+    Tool -->|向量召回| Milvus[(Milvus)]
+    Tool -->|可选重排序| Jina[Jina Reranker]
+    Agent --> PG[(PostgreSQL Checkpointer)]
+    API -->|上传、解析、向量化| Milvus
 ```
 
-## 技术栈
-
-| 模块 | 技术 |
+| 部分 | 实现 |
 | --- | --- |
-| 前端 | Vue 3、Vite、Vue Router、Axios |
-| Web 服务 | Nginx |
-| 后端 | FastAPI、Pydantic、SSE |
-| Agent | LangChain、LangGraph |
-| 大模型 | DeepSeek |
-| Embedding | 智谱 Embedding API |
-| 向量数据库 | Milvus |
+| 页面 | Vue 3、Vite、Vue Router |
+| API | FastAPI、SSE |
+| Agent | LangChain、LangGraph、DeepSeek |
+| 向量化与检索 | 智谱 Embedding API、Milvus、Jina Reranker（可选） |
 | 会话持久化 | PostgreSQL、LangGraph Checkpointer |
-| 部署 | Docker、Docker Compose |
+| 部署 | Docker Compose、Nginx |
 
-## 项目结构
+## 快速启动：Docker Compose
 
-```text
-.
-├── app/
-│   ├── api/
-│   │   ├── chat.py               # 普通问答与 SSE 流式问答
-│   │   ├── knowledge.py          # 知识文件上传接口
-│   │   └── threads.py            # 会话删除接口
-│   ├── agent/
-│   │   ├── init_agent.py         # Agent 与 PostgreSQL Checkpointer
-│   │   └── tools.py              # 知识库检索工具
-│   ├── RAG/
-│   │   ├── Loader.py             # 内置 Markdown 批量加载
-│   │   ├── upload_loader.py      # 上传文件解析
-│   │   ├── spiltter.py           # 文本切分
-│   │   ├── retriever.py          # Milvus 检索
-│   │   └── vector_store.py       # Embedding、稳定 ID 与向量写入
-│   ├── bootstrap.py              # 空知识库首次初始化
-│   ├── config.py
-│   └── main.py
-├── data/
-│   ├── knowledge/                # 内置知识库与 60 道评测题
-│   └── uploads/                  # 本地开发上传目录
-├── frontend/
-│   ├── src/
-│   ├── Dockerfile
-│   └── nginx.conf
-├── Dockerfile                    # FastAPI 镜像
-├── compose.yaml
-├── requirements.txt
-└── .env.example
-```
+需要 Docker Desktop，以及可用的 DeepSeek、智谱模型服务密钥。启用重排序时还需要 Jina API Key。
 
-## Docker 一键部署
+1. 在项目根目录复制配置文件：
 
-### 1. 准备配置
+   ```bash
+   cp .env.example .env
+   ```
 
-```bash
-cp .env.example .env
-```
+2. 编辑 `.env`，至少配置：
 
-至少填写：
+   ```env
+   DEEPSEEK_API_KEY=你的密钥
+   DEEPSEEK_BASE_URL=对应服务地址
+   ZHIPUAI_API_KEY=你的密钥
+   SUPPORT_ACCESS_TOKEN=自行生成的随机长字符串
+   ```
 
-```env
-DEEPSEEK_API_KEY=你的密钥
-DEEPSEEK_BASE_URL=对应服务地址
-ZHIPUAI_API_KEY=你的密钥
-SUPPORT_ACCESS_TOKEN=随机长字符串
-```
+   如需启用重排序，将 `JINA_API_KEY` 换成有效密钥，并保持 `RERANK_ENABLED=true`；暂不使用时设置 `RERANK_ENABLED=false`。不要提交 `.env`。默认数据库密码仅用于本机演示，部署到其他环境前应修改 `POSTGRES_PASSWORD`。
 
-不要将真实 `.env` 提交到代码仓库。
+3. 构建并启动：
 
-### 2. 构建并启动
+   ```bash
+   docker compose up -d --build
+   docker compose ps
+   ```
+
+   Compose 启动 PostgreSQL、Milvus、后端和前端。`knowledge-init` 只在目标 Milvus 集合为空时导入内置文档；已有数据不会被它覆盖。模型 API 需要可用网络连接。
+
+4. 访问：
+
+   | 地址 | 用途 |
+   | --- | --- |
+   | `http://localhost:5173` | 前端页面；Compose 构建时使用真实 API 模式 |
+   | `http://localhost:8000/docs` | FastAPI 接口文档 |
+   | `http://localhost:8000/health` | 后端健康检查 |
+
+   宿主机端口可通过 `.env` 中的 `FRONTEND_PORT`、`BACKEND_PORT`、`POSTGRES_PORT` 和 `MILVUS_PORT` 调整。若本机已有服务占用端口，先调整映射，不必停止原有服务。
+
+常用命令：
 
 ```bash
-docker compose up -d --build
+docker compose ps               # 查看状态
+docker compose logs -f backend  # 查看后端日志
+docker compose down             # 停止并移除本项目容器，保留 Volume 数据
 ```
 
-Compose 会依次：
-
-1. 启动 PostgreSQL 和 Milvus。
-2. 检查 Milvus 是否为空。
-3. 首次部署时将内置知识文档写入 Milvus。
-4. 启动 FastAPI。
-5. 启动 Vue/Nginx 前端。
-
-### 3. 访问
-
-| 地址 | 用途 |
-| --- | --- |
-| http://localhost:5173 | 知识助手前端 |
-| http://localhost:8000/docs | FastAPI 接口文档 |
-| http://localhost:8000/health | 后端健康检查 |
-
-### 4. 管理命令
-
-```bash
-# 查看状态
-docker compose ps
-
-# 查看日志
-docker compose logs -f
-
-# 停止并删除容器，保留数据
-docker compose down
-
-# 同时删除数据库和上传文件 Volume
-docker compose down -v
-```
-
-PostgreSQL、Milvus 和上传文件均使用 Docker Volume 持久化。
+PostgreSQL、Milvus 和上传文件分别使用 `postgres-data`、`milvus-data`、`uploads-data` 命名 Volume；`docker compose down` 不删除这些数据。
 
 ## 本地开发
 
-本地开发可以继续连接已经运行的 PostgreSQL 和 Milvus。
+以下命令均从项目根目录开始。先启动 PostgreSQL 和 Milvus，并在 `.env` 中填写可由本机访问的 `DB_URL`、`MILVUS_URI` 和模型密钥。若通过 Compose 启动了整个项目，且本机 8000 端口已被容器占用，先停止对应服务或改用其他端口。
 
 ### 后端
+
+推荐 Python 3.12。使用 Conda 时：
 
 ```bash
 conda create -n RAG-Agent python=3.12 -y
 conda activate RAG-Agent
 pip install -r requirements.txt
+```
+
+空 Milvus 集合需要初始化内置文档时运行：
+
+```bash
+python -m app.bootstrap
+```
+
+随后启动 API：
+
+```bash
 uvicorn app.main:app --reload
 ```
 
-本地 `.env` 中使用：
-
-```env
-DB_URL=postgresql://postgres:123456@localhost:5432/rag_db
-MILVUS_URI=http://localhost:19530
-```
-
-首次需要手动写入内置知识库时：
-
-```bash
-python -c "from app.main import ingest; ingest()"
-```
+`app.bootstrap` 检测到集合已有数据时会跳过，因此它不是“修改内置文档后强制重新索引”的命令。
 
 ### 前端
+
+需要 Node.js 和 npm。在 `frontend/` 目录安装依赖：
 
 ```bash
 cd frontend
 npm ci
 ```
 
-创建 `frontend/.env.local`：
+创建 `frontend/.env.local`，让 Vite 开发页面调用本机 API：
 
 ```env
 VITE_USE_MOCK=false
 VITE_API_BASE_URL=http://127.0.0.1:8000
 ```
 
-启动：
+然后运行：
 
 ```bash
 npm run dev
 ```
 
-## API
+不设置 `VITE_USE_MOCK=false` 时，本地开发页面使用 Mock 数据；Compose 构建的页面已配置真实 API。Compose 中的 Nginx 负责提供构建后的 Vue 静态文件，并把 `/api/` 请求代理到后端；本地 `npm run dev` 则由 Vite 提供开发页面。
 
-### 普通回答
+## 主要接口
 
-```http
-POST /api/chat
-Content-Type: application/json
-```
+| 接口 | 作用 |
+| --- | --- |
+| `POST /api/chat/stream` | SSE 流式问答；返回 `message`、`sources`、`done` 或 `error` 事件 |
+| `POST /api/chat` | 返回完整 JSON 回答，便于接口调试 |
+| `POST /api/knowledge/upload` | 上传 PDF、TXT、MD 或 Markdown 文件并入库 |
+| `DELETE /api/threads/{thread_id}` | 删除指定角色的会话状态 |
+
+聊天请求示例：
 
 ```json
 {
@@ -210,120 +157,70 @@ Content-Type: application/json
 }
 ```
 
-`role`默认为`customer`。客户只能检索`audience`包含`customer`的文档。
-客服请求使用`role: "support"`时，还必须提供请求头：
+`role` 默认是 `customer`。`support` 请求还必须提供 `X-Support-Token` 请求头。该令牌只能保存在服务端或受控的内部客户端，不能写进公开的 Vue 页面。
 
-```http
-X-Support-Token: 与 .env 中 SUPPORT_ACCESS_TOKEN 相同的值
+上传接口目前**没有身份认证**；上传文件若未提供 YAML 中的 `audience`，会默认对 `customer` 和 `support` 两种角色可检索。演示时只上传可公开的模拟文档，不要将该接口直接暴露给不受信任的用户。
+
+## 知识库与评测
+
+内置文档位于 `data/knowledge/starbridge-rag-starter/knowledge_base/`：
+
+| 分类 | 文档数 | 内容 |
+| --- | ---: | --- |
+| `product` | 12 | 产品功能、权限和操作 |
+| `support` | 8 | 客服排查与处理流程 |
+| `policy` | 6 | 套餐、额度和服务规则 |
+| `release` | 4 | 版本公告与历史变化 |
+
+文档的 YAML 头记录 `doc_id`、版本、状态、适用角色等元数据。检索时依据 `audience` 过滤；当前没有按版本状态或生效日期进行结构化过滤，历史规则仍需由 Agent 根据文档内容判断。
+
+评测题位于 `data/knowledge/starbridge-rag-starter/evaluation/questions.jsonl`，共 60 题，覆盖事实、操作流程、跨文档、历史时效、访问控制和证据不足六类场景。评测程序调用真实 SSE 接口：
+
+```bash
+python evaluation/evaluate.py --limit 5  # 先检查链路
+python evaluation/evaluate.py            # 运行全部 60 题
 ```
 
-客服密钥只保存在后端和内部评测环境中，不应写入Vue前端。相同的`thread_id`会按角色映射到不同的PostgreSQL会话，客户无法读取客服会话历史。
+评测报告保存到 `evaluation/results/`，包含逐题回答、来源、耗时以及检索指标。该目录在 `.gitignore` 中，本地报告默认不会提交到仓库。
 
-### 流式回答
+最近一次本地完整运行（2026-10-01，60/60 题成功返回）如下。只有 **53 道标注了目标文档的题目**参与检索指标计算：
 
-```http
-POST /api/chat/stream
-```
+| 检索指标 | 结果 |
+| --- | ---: |
+| Hit@5 | 96.2% |
+| Macro Recall@5 | 90.9% |
+| MRR | 0.841 |
+| 目标文档全部找齐率 | 86.8% |
+| 平均响应时间 | 4.38 秒 |
 
-SSE 事件包括：
+这些数字衡量检索来源与人工标注文档的匹配程度，**不是回答准确率**。回答是否符合 `expected_behavior` 和 `expected_points` 仍需逐题人工检查。评测集由项目自行构建，以上结果属于本地演示评测，不代表生产环境表现。
 
-- `message`：回答文字片段
-- `sources`：检索来源
-- `done`：回答结束
-- `error`：生成失败
-
-### 上传知识文件
-
-```http
-POST /api/knowledge/upload
-Content-Type: multipart/form-data
-```
-
-支持 PDF、TXT、MD、Markdown，单文件最大 10 MB。
-
-上传流程：
+## 项目目录
 
 ```text
-文件校验
-  → SHA-256 重复检查
-  → 保存原文件
-  → 解析为 Document
-  → 文本切分
-  → Embedding
-  → Upsert Milvus
+.
+├── app/
+│   ├── api/                # 聊天、上传、会话接口
+│   ├── agent/              # Agent、提示词与检索工具
+│   ├── RAG/                # 文档加载、切分、检索、重排序、写入
+│   ├── bootstrap.py        # 空集合初始化
+│   └── main.py             # FastAPI 入口
+├── data/knowledge/         # 内置知识库与评测题
+├── evaluation/evaluate.py  # 端到端评测程序
+├── frontend/               # Vue 页面与 Nginx 配置
+├── tests/                  # 访问边界相关测试
+├── compose.yaml
+├── Dockerfile
+├── requirements.txt
+└── .env.example
 ```
 
-### 删除会话
+## 当前边界
 
-```http
-DELETE /api/threads/{thread_id}
-```
+- 项目使用客服共享令牌区分两种角色，尚未实现用户登录、按组织和项目授权的完整权限体系。
+- 知识上传尚未加入身份认证、审核或文档发布流程；上传内容会直接进入向量库。
+- 文档版本、状态和生效日期未作为结构化检索条件；冲突或时效问题需要进一步人工核验。
+- 当前测试主要覆盖角色访问边界，尚未形成覆盖上传、重排序和部署流程的完整自动化测试。
+- 重排序依赖外部 Jina 服务；发生错误时会回退到 Milvus 顺序，但检索质量可能变化。
 
-## 知识库
-
-内置知识库模拟一款企业项目管理产品，包含：
-
-| 分类 | 数量 | 内容 |
-| --- | ---: | --- |
-| product | 12 | 产品功能、权限和操作 |
-| support | 8 | 客服排查与处理流程 |
-| policy | 6 | 套餐、额度和服务规则 |
-| release | 4 | 更新公告和历史事件 |
-
-Markdown 文档通过 YAML 保存 `doc_id`、标题、版本、状态、生效时间、访问身份和关联文档等信息。
-
-## 评测数据
-
-`data/knowledge/starbridge-rag-starter/evaluation/questions.jsonl` 包含 60 道标注题，覆盖：
-
-- 事实问答
-- 操作流程
-- 跨文档问题
-- 历史版本
-- 访问控制
-- 证据不足
-
-评测程序位于 `evaluation/evaluate.py`。它会调用真实的 SSE 问答接口，记录完整回答、来源、首字延迟和总响应时间，并计算 Hit@5、Macro Recall@5、MRR 和完整来源召回率。
-
-先用 5 道题检查链路：
-
-```bash
-python evaluation/evaluate.py --limit 5
-```
-
-运行全部 60 道题：
-
-```bash
-python evaluation/evaluate.py
-```
-
-也可以只运行一种题型：
-
-```bash
-python evaluation/evaluate.py --category fact
-```
-
-报告会写入 `evaluation/results/`，同时生成 JSON 和 CSV。CSV 中保留了 `expected_behavior` 和 `expected_points`，方便逐题检查答案。评测产生的临时会话默认会自动删除。
-
-检索指标只统计带 `gold_doc_ids` 的题目。评测程序会按题目中的`role`调用客户或客服知识范围；客服题从本地`.env`读取`SUPPORT_ACCESS_TOKEN`。权限、历史时间和证据不足类问题仍需要人工判断回答行为，程序不会伪造这些题目的自动通过率。在得到真实运行结果前，不应在简历中填写虚构准确率。
-
-## 当前限制
-
-- 尚未实现账号登录和基于用户身份的完整RBAC；当前客服访问使用服务端共享密钥
-- `audience`已经用于检索过滤；版本状态和生效日期尚未作为结构化过滤条件
-- 当前检索以向量 Top K 为主，尚未增加重排序
-- 尚未提供完整的自动化接口测试
-- Redis 已列入依赖，但当前业务流程尚未使用
-
-## 项目定位
-
-这是一个面向学习、作品集和实习展示的全栈 Agentic RAG 项目，重点展示：
-
-- 企业知识库的数据建模
-- RAG 文档入库和来源追溯
-- Agent 工具调用
-- PostgreSQL 多轮会话持久化
-- FastAPI 与 Vue 的前后端协作
-- Docker Compose 可复现部署
-
-它已经具备完整演示链路和基础访问边界，但仍需要真实账号认证、完整RBAC、版本过滤和更完整的测试体系才能达到生产系统要求。
+本项目用于展示企业知识库的数据组织、检索问答和可复现部署流程，当前定位是可运行的作品集项目。
